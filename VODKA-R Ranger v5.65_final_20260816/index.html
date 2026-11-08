@@ -1,0 +1,165 @@
+//@version=6
+strategy("VODKA-R Ranger v5.65 (OR-Gate Perfect)", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10)
+
+// ==========================================
+// 1. 输入参数配置（已根据实盘调试全面优化缺省值）
+// ==========================================
+kc_len   = input.int(50, title="Keltner Length")
+kc_mult1 = input.float(2.75, title="Inner Mult (Yellow)")
+kc_mult2 = input.float(3.75, title="Outer Mult (Blue)")
+
+// ATR 2.5倍固化止损，严格 1:1 风险回报比
+sl_atr_mult = input.float(2.5, title="SL ATR Mult")
+
+// 双因子或门过滤器参数固化
+donchian_len = input.int(8, title="条件A：唐奇安通道长度 (默认8小时)")
+rsi_len      = input.int(14, title="RSI指标基础长度")
+rsi_ob_level = input.int(70, title="条件B：RSI超买窒息线 (🌟已优化为70)")
+rsi_os_level = input.int(30, title="条件B：RSI超卖窒息线 (🌟已优化为30)")
+lookback_bars= input.int(8, title="条件B：RSI极值向前追溯K线根数 (默认8根)")
+
+// ⏳ 持仓时限升级：5选1 拓展为 6 选 1，且默认缺省值完美切换为 48小时
+max_hold_time = input.string("48小时", title="⏳ 持仓上限 (缺省默认48小时)", 
+                   options=["2小时", "4小时", "8小时", "12小时", "24小时", "48小时"])
+
+// ==========================================
+// 2. 指标基础数学计算 (100% 确保主图画线呈现实线，并在样式中可见)
+// ==========================================
+ma_center    = ta.ema(close, kc_len)
+official_atr = ta.rma(ta.tr(true), 10) // 严格对齐官方内置指标
+
+kc_lower_blue   = ma_center - (official_atr * kc_mult2)
+kc_lower_yellow = ma_center - (official_atr * kc_mult1)
+kc_upper_yellow = ma_center + (official_atr * kc_mult1)
+kc_upper_blue   = ma_center + (official_atr * kc_mult2)
+
+// 钢铁画线输出
+plot(ma_center, title="Keltner Center Line (MA 50)", color=color.new(color.gray, 30), style=plot.style_line, linewidth=1)
+plot(kc_upper_blue, title="KC 3.75 Upper (Blue)", color=color.blue, linewidth=1)
+plot(kc_upper_yellow, title="KC 2.75 Upper (Yellow)", color=color.yellow, linewidth=1)
+plot(kc_lower_yellow, title="KC 2.75 Lower (Yellow)", color=color.yellow, linewidth=1)
+plot(kc_lower_blue, title="KC 3.75 Lower (Blue)", color=color.blue, linewidth=1)
+
+// ==========================================
+// 3. 过滤器因子计算 (Donchian 8 + RSI 14)
+// ==========================================
+// 🌟 核心破局：利用 [1] 错位回溯，计算【不含当前K线】的前一根K线为止的历史真实大盘边界！
+dc_upper_raw = ta.highest(high, donchian_len)
+dc_lower_raw = ta.lowest(low, donchian_len)
+dc_upper     = dc_upper_raw[1]
+dc_lower     = dc_lower_raw[1]
+
+// 条件 B 的 RSI 计算与过去8根棒子的极值搜寻
+rsi_val = ta.rsi(close, rsi_len)
+rsi_highest_past = ta.highest(rsi_val, lookback_bars)
+rsi_lowest_past  = ta.lowest(rsi_val, lookback_bars)
+
+// ==========================================
+// 4. 一次性击发状态机雷达判定 (全面升级多维重置)
+// ==========================================
+var bool is_long_radar_on  = false
+var bool is_short_radar_on = false
+
+long_breakout  = close < kc_lower_blue
+short_breakout = close > kc_upper_blue
+
+// 探测与激活：无仓位时触发，或者持仓期间再度击穿外轨时【无条件强制再次激活雷达】
+if (long_breakout)
+    is_long_radar_on := true
+
+if (short_breakout)
+    is_short_radar_on := true
+
+// 触发基础穿回动作
+long_cross_happened  = ta.crossover(close, kc_lower_yellow)
+short_cross_happened = ta.crossunder(close, kc_upper_yellow)
+
+// 🌟 或门解锁：由于唐奇安已经错位[1]，现在当前K线收盘价可以完美进行结构突破判定了！
+filter_long_condition = (close > dc_upper) or (rsi_lowest_past < rsi_os_level)
+filter_short_condition = (close < dc_lower) or (rsi_highest_past > rsi_ob_level)
+
+// 击发总指挥
+long_trigger  = is_long_radar_on and long_cross_happened and filter_long_condition and strategy.position_size <= 0
+short_trigger = is_short_radar_on and short_cross_happened and filter_short_condition and strategy.position_size >= 0
+
+// 一次性配对击发终极重置铁律
+if (long_cross_happened)
+    is_long_radar_on := false
+if (short_cross_happened)
+    is_short_radar_on := false
+
+// ==========================================
+// 5. 绝对固化发单流 & 您的天才换防断路器
+// ==========================================
+var float fixed_sl = na
+var float fixed_tp = na
+var int entry_bar = 0
+
+// 多单在场时，如果价格再次跌破 3.75 蓝轨 ➔ 触发强制换防平仓
+if (strategy.position_size > 0 and long_breakout)
+    strategy.close("Long", comment="多头动能过载·强制重置空仓")
+    fixed_sl := na
+    fixed_tp := na
+
+// 空单在场时，如果价格再次涨破 3.75 蓝轨 ➔ 触发强制换防平仓
+if (strategy.position_size < 0 and short_breakout)
+    strategy.close("Short", comment="空头动能过载·强制重置空仓")
+    fixed_sl := na
+    fixed_tp := na
+
+// 执行多单
+if (long_trigger and strategy.position_size <= 0)
+    sl_distance = official_atr * sl_atr_mult
+    fixed_sl    := close - sl_distance
+    fixed_tp    := close + sl_distance 
+    entry_bar   := bar_index
+    
+    factor_msg = (close > dc_upper) and (rsi_lowest_past < rsi_os_level) ? "双因子共振突破" : (close > dc_upper) ? "因子A(Donchian)结构突围" : "因子B(RSI30)情绪极值反弹"
+    
+    msg = "【VODKA-R v5.65 游骑兵多单 🟢】\n" +
+          "基准入场价: " + str.tostring(close) + "\n" +
+          "固定止损 SL: " + str.tostring(fixed_sl) + "\n" +
+          "1:1纯净止盈 TP: " + str.tostring(fixed_tp) + "\n" +
+          "放行因子说明: " + factor_msg
+          
+    strategy.entry("Long", strategy.long, alert_message=msg)
+
+// 执行空单
+if (short_trigger and strategy.position_size >= 0)
+    sl_distance = official_atr * sl_atr_mult
+    fixed_sl    := close + sl_distance
+    fixed_tp    := close - sl_distance 
+    entry_bar   := bar_index
+    
+    factor_msg = (close < dc_lower) and (rsi_highest_past > rsi_ob_level) ? "双因子共振突破" : (close < dc_lower) ? "因子A(Donchian)结构突围" : "因子B(RSI70)情绪极值反弹"
+    
+    msg = "【VODKA-R v5.65 游骑兵空单 🔴】\n" +
+          "基准入场价: " + str.tostring(close) + "\n" +
+          "固定止损 SL: " + str.tostring(fixed_sl) + "\n" +
+          "固定止盈 TP: " + str.tostring(fixed_tp) + "\n" +
+          "放行因子说明: " + factor_msg
+          
+    strategy.entry("Short", strategy.short, alert_message=msg)
+
+// ==========================================
+// 6. 🌟 48小时全新时限强平与最终OCO挂单清算
+// ==========================================
+int target_bars = max_hold_time == "2小时" ? 2 : max_hold_time == "4小时" ? 4 : max_hold_time == "8小时" ? 8 : max_hold_time == "12小时" ? 12 : max_hold_time == "24小时" ? 24 : 48
+is_timeout = (bar_index - entry_bar) >= target_bars
+
+if (strategy.position_size != 0)
+    if (is_timeout)
+        strategy.close_all(comment="游骑兵超时强平重置")
+    else
+        strategy.exit("Exit", stop=fixed_sl, limit=fixed_tp)
+
+// 强化测距线重现：100%在主图画出刚性水平虚线
+plot(strategy.position_size != 0 ? fixed_sl : na, title="🔒 实盘固定止损线 (SL)", color=color.red, style=plot.style_linebr, linewidth=1)
+plot(strategy.position_size != 0 ? fixed_tp : na, title="🔒 实盘固定止盈线 (TP)", color=color.green, style=plot.style_linebr, linewidth=1)
+
+plotshape(long_trigger and strategy.position_size > 0, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small, text="Ranger Buy")
+plotshape(short_trigger and strategy.position_size < 0, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, text="Ranger Sell")
+
+if (strategy.position_size == 0)
+    fixed_sl := na
+    fixed_tp := na

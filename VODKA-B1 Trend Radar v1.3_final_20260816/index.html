@@ -1,0 +1,68 @@
+//@version=6
+indicator("VODKA-B Trend Radar v1.3 (Unleashed Fixed)", overlay=true)
+
+// ==========================================
+// 1. 输入参数配置面板
+// ==========================================
+donchian_len = input.int(30, title="Donchian Channel Length")
+kc_len       = input.int(50, title="Keltner Channel Length")
+kc_mult      = input.float(2.0, title="Keltner Band Mult (Default 2.0)")
+
+// Volume Spike 核心参数 (4H 级别量能峰值波点判定)
+vol_ma_len   = input.int(20, title="Volume MA Length")
+vol_mult     = input.float(2.5, title="Volume Spike Threshold Mult")
+
+// ==========================================
+// 2. 指标底层数学计算 (100%对齐官方内置版本)
+// ==========================================
+// A. 唐奇安通道 
+dc_upper = ta.highest(high, donchian_len)
+dc_lower = ta.lowest(low, donchian_len)
+
+// B. 肯特纳通道
+kc_basis = ta.ema(close, kc_len)
+kc_atr   = ta.rma(ta.tr(true), 10) 
+kc_upper = kc_basis + (kc_atr * kc_mult)
+kc_lower = kc_basis - (kc_atr * kc_mult)
+
+// C. Volume Spike 探测
+vol_ma = ta.sma(volume, vol_ma_len)
+is_vol_spike = volume > (vol_ma * vol_mult)
+
+// D. TTM Squeeze Pro 动能核心
+squeeze_ma   = ta.sma(close, 20)
+squeeze_high = ta.highest(high, 20)
+squeeze_low  = ta.lowest(low, 20)
+squeeze_val  = ta.linreg(close - (math.avg(math.avg(squeeze_high, squeeze_low), squeeze_ma)), 20, 0)
+
+is_momentum_up   = squeeze_val > 0 and ta.change(squeeze_val) > 0 // 浅蓝色柱 (强多)
+is_momentum_down = squeeze_val < 0 and ta.change(squeeze_val) < 0 // 红色柱 (强空)
+
+// ==========================================
+// 3. 🌟 您天才的修改延伸：【强趋势动能免疫】决策树
+// ==========================================
+// 触发条件 1：【动能刺穿门】算法
+cond1_long  = is_vol_spike and high > dc_upper[1] and close > kc_upper
+cond1_short = is_vol_spike and low < dc_lower[1] and (close < kc_lower or low < kc_lower)
+
+// 触发条件 2：顺势加固解禁！在强烈的浅蓝柱/红柱趋势主升浪下，免除零轴点颜色限制，100%放行加仓！
+cond2_long  = is_momentum_up
+cond2_short = is_momentum_down
+
+// 🚨 终极合力发令枪
+vodkab_long_signal  = cond1_long and cond2_long
+vodkab_short_signal = cond1_short and cond2_short
+
+// ==========================================
+// 4. 视觉呈现与实盘动态告警输出
+// ==========================================
+plotshape(vodkab_long_signal, title="VODKA-B 多头启动 🌋", style=shape.labelup, location=location.belowbar, color=color.green, size=size.normal, text="VODKA-B BUY", textcolor=color.white)
+plotshape(vodkab_short_signal, title="VODKA-B 空头启动 🌋", style=shape.labeldown, location=location.abovebar, color=color.red, size=size.normal, text="VODKA-B SELL", textcolor=color.white)
+
+if (vodkab_long_signal)
+    msg = "【VODKA-B 战略趋势多头冲锋 🟢】\n" + "当前品种: " + syminfo.ticker + "\n当前价格: " + str.tostring(close) + "\n【雷达状态】：量能共振突破已确立！请立即核对日线屏执行建仓/加仓！"
+    alert(msg, alert.freq_once_per_bar_close)
+
+if (vodkab_short_signal)
+    msg = "【VODKA-B 战略趋势空头冲锋 🔴】\n" + "当前品种: " + syminfo.ticker + "\n当前价格: " + str.tostring(close) + "\n【雷达状态】：量能共振暴跌已确立！请立即核对日线屏执行建仓/加仓！"
+    alert(msg, alert.freq_once_per_bar_close)
